@@ -6,6 +6,7 @@ except ImportError:
     # Python < 2.7
     from ordereddict import OrderedDict
 
+
 def soql(sf, sf_object, field_types, where_clause=''):
     soap_url = 'https://zendesk.my.salesforce.com/services/Soap/u/38.0'
     query = 'select {} FROM {} {}'.format(','.join(field_types.keys()), sf_object, where_clause)
@@ -97,12 +98,12 @@ def get_query_locator(xml_string):
 
 def get_records(xml_string, field_types):
     result_node = __get_result_node_from_soap_query_response(xml_string)
-    all_records = [c for c in result_node.childNodes if c.tagName == 'records']
+    all_records = [c for c in result_node.childNodes if hasattr(c, 'tagName') and c.tagName == 'records']
     all_records_dicts = list()
     for record in all_records:
         attributes_dict = OrderedDict()
         for attribute in record.childNodes:
-            if attribute.tagName == 'sf:type':
+            if not hasattr(attribute, 'tagName') or attribute.tagName == 'sf:type':
                 pass
             else:
                 field_name = attribute.tagName[3:]
@@ -135,7 +136,7 @@ def __get_result_node_from_soap_query_response(xml_string):
 
 
 def __get_unique_child_node_from_xml(xml_dom, element_name):
-    elements_by_name = [c for c in xml_dom.childNodes if c.tagName == element_name]
+    elements_by_name = [c for c in xml_dom.childNodes if hasattr(c, 'tagName') and c.tagName == element_name]
     if len(elements_by_name) > 0:
         return elements_by_name[0]
     return None
@@ -148,9 +149,9 @@ def __get_unique_child_value_from_xml(xml_dom, element_name, convert_empty_to_no
 
 def __get_text_content(node, convert_empty_to_none=False):
     rc = ""
-    for node in node.childNodes:
-        if node.nodeType == node.TEXT_NODE:
-            rc = rc + node.data
+    for child in node.childNodes:
+        if child.nodeType == node.TEXT_NODE:
+            rc = rc + child.data
     if rc == '' and convert_empty_to_none:
         rc = None
     return rc
