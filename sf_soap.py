@@ -1,5 +1,8 @@
 import xml.dom.minidom
 import requests
+import time
+from simple_salesforce.exceptions import SalesforceMoreThanOneRecord, SalesforceMalformedRequest, \
+    SalesforceExpiredSession, SalesforceRefusedRequest, SalesforceResourceNotFound, SalesforceGeneralError
 try:
     from collections import OrderedDict
 except ImportError:
@@ -8,7 +11,6 @@ except ImportError:
 
 
 def soql(sf, sf_object, field_types, where_clause=''):
-    soap_url = 'https://zendesk.my.salesforce.com/services/Soap/u/38.0'
     query = 'select {} FROM {} {}'.format(','.join(field_types.keys()), sf_object, where_clause)
     soap_message_body = """
     <soapenv:Envelope 
@@ -26,13 +28,8 @@ def soql(sf, sf_object, field_types, where_clause=''):
             </urn:query>
         </soapenv:Body>
     </soapenv:Envelope>""".format(session_id=sf.session_id, query=query)
-    soap_request_headers = {
-        'content-type': 'text/xml',
-        'charset': 'UTF-8',
-        'SOAPAction': 'query'
-    }
-    response = requests.post(soap_url, soap_message_body, headers=soap_request_headers)
-    all_records, fetch_more = __handle_query_response(response, field_types)
+    xml_response = __call_soap_api(soap_message_body)
+    all_records, fetch_more = __handle_query_response(xml_response, field_types)
     while fetch_more != '':
         records, fetch_more = __fetch_more(sf, fetch_more, field_types)
         all_records['records'].extend(records['records'])
@@ -40,22 +37,37 @@ def soql(sf, sf_object, field_types, where_clause=''):
     return all_records
 
 
-def __handle_query_response(response, field_types):
+def __call_soap_api(soap_message_body):
+    soap_url = 'https://zendesk.my.salesforce.com/services/Soap/u/38.0'
+    soap_request_headers = {
+        'content-type': 'text/xml',
+        'charset': 'UTF-8',
+        'SOAPAction': 'query'
+    }
+    # retry current request 3 time before erroring
+    request_tries = range(3)
+    for _ in request_tries:
+        response = requests.post(soap_url, soap_message_body, headers=soap_request_headers)
+        if response.status_code == 200:
+            return response.text
+        else:
+            time.sleep(10)
+
     if response.status_code != 200:
-        # TODO report failure
-        pass
-    else:
-        xml_string = response.text
-        all_results_fetched = is_final_page(xml_string)
-        return OrderedDict([
-            ('totalSize', get_results_size(xml_string)),
-            ('done', all_results_fetched),
-            ('records', get_records(xml_string, field_types))
-        ]), '' if all_results_fetched else get_query_locator(xml_string)
+        __exception_handler(response)
+
+
+def __handle_query_response(xml_response, field_types):
+    all_results_fetched = is_final_page(xml_response)
+    return OrderedDict([
+        ('totalSize', get_results_size(xml_response)),
+        ('done', all_results_fetched),
+        ('records', get_records(xml_response, field_types))
+    ]), '' if all_results_fetched else get_query_locator(xml_response)
 
 
 def __fetch_more(sf, query_locator, field_types):
-    soap_message_body_more = """
+    soap_message_body = """
     <soapenv:Envelope 
             xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" 
             xmlns:urn="urn:partner.soap.sforce.com" 
@@ -71,14 +83,8 @@ def __fetch_more(sf, query_locator, field_types):
             </urn:queryMore>
         </soapenv:Body>
     </soapenv:Envelope>""".format(session_id=sf.session_id, query_locator=query_locator)
-    soap_url = 'https://zendesk.my.salesforce.com/services/Soap/u/38.0'
-    soap_request_headers = {
-        'content-type': 'text/xml',
-        'charset': 'UTF-8',
-        'SOAPAction': 'query'
-    }
-    response = requests.post(soap_url, soap_message_body_more, headers=soap_request_headers)
-    return __handle_query_response(response, field_types)
+    xml_response = __call_soap_api(soap_message_body)
+    return __handle_query_response(xml_response, field_types)
 
 
 def is_final_page(xml_string):
@@ -223,3 +229,18 @@ __parsers_map = {
     'urn:address': __address_parse,
     'urn:location': __location_parse
 }
+
+
+def __exception_handler(response, name=""):
+    """Exception router. Determines which error to raise for bad results"""
+    
+    exc_map = {
+        300: SalesforceMoreThanOneRecord,
+        400: SalesforceMalformedRequest,
+        401: SalesforceExpiredSession,
+        403: SalesforceRefusedRequest,
+        404: SalesforceResourceNotFound,
+    }
+    exc_cls = exc_map.get(response.status_code, SalesforceGeneralError)
+
+    raise exc_cls(response.url, response.status_code, name, response.text)
