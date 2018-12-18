@@ -1,6 +1,7 @@
 import xml.dom.minidom
 import requests
 import time
+import logging
 from simple_salesforce.exceptions import SalesforceMoreThanOneRecord, SalesforceMalformedRequest, \
     SalesforceExpiredSession, SalesforceRefusedRequest, SalesforceResourceNotFound, SalesforceGeneralError
 try:
@@ -12,6 +13,7 @@ except ImportError:
 
 def soql(sf, sf_object, field_types, where_clause=''):
     query = 'select {} FROM {} {}'.format(','.join(field_types.keys()), sf_object, where_clause)
+    logging.info('preparing to send query to Salesforce SOAP API. Query length is {}'.format(len(query)))
     soap_message_body = """
     <soapenv:Envelope 
             xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" 
@@ -46,11 +48,16 @@ def __call_soap_api(soap_message_body):
     }
     # retry current request 3 time before erroring
     request_tries = range(3)
-    for _ in request_tries:
+    for attempt in request_tries:
         response = requests.post(soap_url, soap_message_body, headers=soap_request_headers)
         if response.status_code == 200:
+            logging.info('Received results from Salesforce SOAP API')
             return response.text
         else:
+            logging.warning('HTTP response code received from SOAP API is {}. Retrying ({} out of 3)'.foramt(
+                response.status_code,
+                attempt + 1
+            ))
             time.sleep(10)
 
     if response.status_code != 200:
@@ -59,14 +66,17 @@ def __call_soap_api(soap_message_body):
 
 def __handle_query_response(xml_response, field_types):
     all_results_fetched = is_final_page(xml_response)
+    num_records = get_results_size(xml_response)
+    logging.info('Number of records received is {}'.format(num_records))
     return OrderedDict([
-        ('totalSize', get_results_size(xml_response)),
+        ('totalSize', num_records),
         ('done', all_results_fetched),
         ('records', get_records(xml_response, field_types))
     ]), '' if all_results_fetched else get_query_locator(xml_response)
 
 
 def __fetch_more(sf, query_locator, field_types):
+    logging.info('Fetching more results chunks from Salesforce SOAP API')
     soap_message_body = """
     <soapenv:Envelope 
             xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" 
@@ -106,16 +116,26 @@ def get_records(xml_string, field_types):
     result_node = __get_result_node_from_soap_query_response(xml_string)
     all_records = [c for c in result_node.childNodes if hasattr(c, 'tagName') and c.tagName == 'records']
     all_records_dicts = list()
+    fields_with_unknown_types = {}
     for record in all_records:
         attributes_dict = OrderedDict()
         for attribute in record.childNodes:
             if not hasattr(attribute, 'tagName') or attribute.tagName == 'sf:type':
                 pass
             else:
+                # all field tags are prefixed with sf: that we need to strip. E.g., sf:Id  ==> Id
                 field_name = attribute.tagName[3:]
-                json_attribute_value = __parsers_map.get(field_types[field_name], __default_parse)(attribute)
+                field_type = field_types[field_name]
+                # get the appropriate field parser based on its type
+                field_parser = __parsers_map.get(field_type, __default_parse)
+                # keep track of fields with unknown types to warn about them
+                if field_type not in __parsers_map:
+                    fields_with_unknown_types[field_name] = field_type
+                json_attribute_value = field_parser(attribute)
                 attributes_dict[field_name] = json_attribute_value
         all_records_dicts.append(attributes_dict)
+        if len(fields_with_unknown_types) > 0 :
+            logging.warning("These fields had unknown types and were parsed with the default parser: {}".format(fields_with_unknown_types))
     return all_records_dicts
 
 
@@ -211,7 +231,8 @@ def __address_parse(node):
     }
 
 
-def __default_parse(node):
+def __default_parse(node)):
+    logging.warning('Falling back to default parser as field {} has an unknown type {}'.format())
     rc = ""
     for child in node.childNodes:
         rc += child.toxml().strip()
