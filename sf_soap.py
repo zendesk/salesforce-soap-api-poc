@@ -107,7 +107,7 @@ def get_records(xml_string, field_types):
                 pass
             else:
                 field_name = attribute.tagName[3:]
-                json_attribute_value = __parsers_map[field_types[field_name]](attribute)
+                json_attribute_value = __parsers_map.get(field_types[field_name], __default_parse)(attribute)
                 attributes_dict[field_name] = json_attribute_value
         all_records_dicts.append(attributes_dict)
     return all_records_dicts
@@ -203,6 +203,13 @@ def __address_parse(node):
             'street':  __get_unique_child_value_from_xml(node, 'street', True)
         }
     }
+
+
+def __default_parse(node):
+    rc = ""
+    for child in node.childNodes:
+        rc += child.toxml().strip()
+    return rc
 
 
 __parsers_map = {

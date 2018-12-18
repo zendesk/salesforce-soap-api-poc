@@ -140,3 +140,34 @@ class HandlingXmlResults(unittest.TestCase):
             },
             dict(records[0])
         )
+
+    def test_unknown_simple_type(self):
+        fields_map = {
+            'Id': 'unknown'
+        }
+        xml_string = self.__xml_boilerplate.format("""
+            <records xsi:type="sf:sObject">
+              <sf:type>Opportunity</sf:type>
+              <sf:Id>00680000016vtCNAAY</sf:Id>
+            </records>
+        """)
+        records = sf_soap.get_records(xml_string, fields_map)
+        self.assertEqual(1, len(records))
+        self.assertDictEqual({'Id': '00680000016vtCNAAY'}, dict(records[0]))
+
+    def test_unknown_complex_type(self):
+        fields_map = {
+            'PartialAddress': 'urn:mycustomtype'
+        }
+        xml_string = self.__xml_boilerplate.format("""
+            <records xsi:type="sf:sObject">
+              <sf:type>Opportunity</sf:type>
+              <sf:PartialAddress xsi:type="address">
+                <city>sydney</city>
+                <country>Australia</country>
+              </sf:PartialAddress>
+            </records>
+        """)
+        records = sf_soap.get_records(xml_string, fields_map)
+        self.assertEqual(1, len(records))
+        self.assertDictEqual({'PartialAddress': '<city>sydney</city><country>Australia</country>'}, dict(records[0]))
